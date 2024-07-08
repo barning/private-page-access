@@ -7,7 +7,7 @@ Author: Niklas Barning
 */
 
 define('MAX_EXPIRY_HOURS', 720);
-define('SECRET_KEY', 'your_secret_key_here'); // Definiere einen geheimen Schlüssel für die Verschlüsselung
+define('SECRET_KEY_OPTION', 'my_plugin_secret_key'); // Der Option Name für den Secret Key
 
 // Token generieren mit benutzerdefinierter Ablaufzeit
 function generate_token($page_id, $expiry_hours) {
@@ -16,12 +16,12 @@ function generate_token($page_id, $expiry_hours) {
     }
     $expiry_time = time() + ($expiry_hours * 3600); // Ablaufzeit in Sekunden umrechnen
     $token_data = bin2hex(random_bytes(8)) . '|' . $page_id . '|' . $expiry_time;
-    return base64_encode(openssl_encrypt($token_data, 'AES-256-CBC', SECRET_KEY, 0, substr(SECRET_KEY, 0, 16)));
+    return base64_encode(openssl_encrypt($token_data, 'AES-256-CBC', SECRET_KEY_OPTION, 0, substr(SECRET_KEY_OPTION, 0, 16)));
 }
 
 // Token validieren mit Ablaufzeit und Entschlüsselung
 function validate_token($encrypted_token) {
-    $token_data = openssl_decrypt(base64_decode($encrypted_token), 'AES-256-CBC', SECRET_KEY, 0, substr(SECRET_KEY, 0, 16));
+    $token_data = openssl_decrypt(base64_decode($encrypted_token), 'AES-256-CBC', SECRET_KEY_OPTION, 0, substr(SECRET_KEY_OPTION, 0, 16));
     if ($token_data === false) {
         return false;
     }
@@ -64,8 +64,14 @@ add_action('pre_get_posts', 'allow_private_page_access');
 // Admin-Menü hinzufügen
 function private_page_access_menu() {
     add_menu_page('Private Page Access', 'Private Page Access', 'manage_options', 'private-page-access', 'private_page_access_page');
+    add_action('admin_init', 'register_my_plugin_settings');
 }
 add_action('admin_menu', 'private_page_access_menu');
+
+// Registrieren der Einstellungen
+function register_my_plugin_settings() {
+    register_setting('my-plugin-settings-group', SECRET_KEY_OPTION);
+}
 
 // Token speichern
 function save_token($page_id, $token) {
@@ -85,6 +91,19 @@ function delete_token($page_id) {
 
 // Admin-Seite rendern
 function private_page_access_page() {
+    if (!current_user_can('manage_options')) {
+        wp_die(__('Sie haben nicht die erforderlichen Berechtigungen, um auf diese Seite zuzugreifen.'));
+    }
+
+    // Überprüfen, ob das Formular gesendet wurde und dann den Secret Key aktualisieren
+    if (isset($_POST[SECRET_KEY_OPTION]) && check_admin_referer('update_secret_key')) {
+        update_option(SECRET_KEY_OPTION, sanitize_text_field($_POST[SECRET_KEY_OPTION]));
+        echo '<div class="notice notice-success is-dismissible"><p>Secret Key aktualisiert.</p></div>';
+    }
+
+    // Die aktuelle Einstellung aus der Datenbank abrufen
+    $secret_key = get_option(SECRET_KEY_OPTION);
+
     if (isset($_POST['page_id']) && isset($_POST['expiry_hours'])) {
         $page_id = intval($_POST['page_id']);
         $expiry_hours = intval($_POST['expiry_hours']);
@@ -106,6 +125,17 @@ function private_page_access_page() {
     ?>
     <div class="wrap">
         <h1>Private Page Access</h1>
+        <form method="post" action="">
+            <?php wp_nonce_field('update_secret_key'); ?>
+            <table class="form-table">
+                <tr valign="top">
+                <th scope="row">Secret Key</th>
+                <td><input type="text" name="<?php echo SECRET_KEY_OPTION; ?>" value="<?php echo esc_attr($secret_key); ?>" /></td>
+                </tr>
+            </table>
+            <?php submit_button(); ?>
+        </form>
+
         <form method="post" style="margin-bottom: 20px;">
             <table class="form-table">
                 <tr>
@@ -215,3 +245,4 @@ function private_page_access_page() {
     <?php
 }
 ?>
+

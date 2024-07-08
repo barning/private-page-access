@@ -2,23 +2,35 @@
 /*
 Plugin Name: Private Page Access
 Description: Ermöglicht den Zugriff auf private Seiten über einen speziellen Link mit Token.
-Version: 1.5
-Author: Dein Name
+Version: 2.2
+Author: Niklas Barning
 */
+
+define('MAX_EXPIRY_HOURS', 720);
+define('SECRET_KEY', 'your_secret_key_here'); // Definiere einen geheimen Schlüssel für die Verschlüsselung
 
 // Token generieren mit benutzerdefinierter Ablaufzeit
 function generate_token($page_id, $expiry_hours) {
+    if ($expiry_hours > MAX_EXPIRY_HOURS) {
+        $expiry_hours = MAX_EXPIRY_HOURS;
+    }
     $expiry_time = time() + ($expiry_hours * 3600); // Ablaufzeit in Sekunden umrechnen
-    return bin2hex(openssl_random_pseudo_bytes(16)) . '|' . $page_id . '|' . $expiry_time;
+    $token_data = bin2hex(random_bytes(8)) . '|' . $page_id . '|' . $expiry_time;
+    return base64_encode(openssl_encrypt($token_data, 'AES-256-CBC', SECRET_KEY, 0, substr(SECRET_KEY, 0, 16)));
 }
 
-// Token validieren mit Ablaufzeit
-function validate_token($token) {
-    list($token_part, $page_id, $expiry_time) = explode('|', $token);
+// Token validieren mit Ablaufzeit und Entschlüsselung
+function validate_token($encrypted_token) {
+    $token_data = openssl_decrypt(base64_decode($encrypted_token), 'AES-256-CBC', SECRET_KEY, 0, substr(SECRET_KEY, 0, 16));
+    if ($token_data === false) {
+        return false;
+    }
+    list($token_part, $page_id, $expiry_time) = explode('|', $token_data);
     if (time() > $expiry_time) {
         return false; // Token ist abgelaufen
     }
-    return ctype_xdigit($token_part) ? $page_id : false;
+    $tokens = get_option('private_page_tokens', []);
+    return isset($tokens[$page_id]) && password_verify($encrypted_token, $tokens[$page_id]) ? $page_id : false;
 }
 
 // Token-Logging-Funktion
@@ -58,7 +70,7 @@ add_action('admin_menu', 'private_page_access_menu');
 // Token speichern
 function save_token($page_id, $token) {
     $tokens = get_option('private_page_tokens', []);
-    $tokens[$page_id] = $token;
+    $tokens[$page_id] = password_hash($token, PASSWORD_DEFAULT); // Token-Hash speichern
     update_option('private_page_tokens', $tokens);
 }
 
@@ -79,8 +91,8 @@ function private_page_access_page() {
         $token = generate_token($page_id, $expiry_hours);
         save_token($page_id, $token);
         $generated_url = get_permalink($page_id) . '?token=' . $token;
-        echo '<div id="message" class="updated notice is-dismissible"><p>Token generiert: <code>' . $token . '</code></p>';
-        echo '<p>URL: <code id="generated-url">' . $generated_url . '</code></p>';
+        echo '<div id="message" class="updated notice is-dismissible"><p>Token generiert: <code>' . htmlspecialchars($token) . '</code></p>';
+        echo '<p>URL: <code id="generated-url">' . htmlspecialchars($generated_url) . '</code></p>';
         echo '<button class="button" onclick="copyToClipboard()">URL kopieren</button></div>';
     }
 
@@ -103,7 +115,7 @@ function private_page_access_page() {
                             <?php
                             $pages = get_pages(['post_status' => 'private']);
                             foreach ($pages as $page) {
-                                echo '<option value="' . $page->ID . '">' . $page->post_title . ' (ID: ' . $page->ID . ')</option>';
+                                echo '<option value="' . $page->ID . '">' . htmlspecialchars($page->post_title) . ' (ID: ' . $page->ID . ')</option>';
                             }
                             ?>
                         </select>
@@ -112,7 +124,7 @@ function private_page_access_page() {
                 <tr>
                     <th scope="row"><label for="expiry_hours">Ablaufzeit (Stunden):</label></th>
                     <td>
-                        <input type="number" name="expiry_hours" id="expiry_hours" required>
+                        <input type="number" name="expiry_hours" id="expiry_hours" min="1" max="<?php echo MAX_EXPIRY_HOURS; ?>" required>
                     </td>
                 </tr>
             </table>
@@ -126,17 +138,17 @@ function private_page_access_page() {
             <thead>
                 <tr>
                     <th>Seiten-ID</th>
-                    <th>Token</th>
+                    <th>Token-Hash</th>
                     <th>URL</th>
                     <th>Aktionen</th>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($tokens as $page_id => $token): ?>
+                <?php foreach ($tokens as $page_id => $token_hash): ?>
                     <tr>
                         <td><?php echo $page_id; ?></td>
-                        <td><?php echo $token; ?></td>
-                        <td><?php echo get_permalink($page_id) . '?token=' . $token; ?></td>
+                        <td><?php echo htmlspecialchars($token_hash); ?></td>
+                        <td><?php echo htmlspecialchars(get_permalink($page_id) . '?token=' . urlencode($token_hash)); ?></td>
                         <td>
                             <form method="post" style="display:inline;">
                                 <input type="hidden" name="delete_page_id" value="<?php echo $page_id; ?>">
@@ -162,9 +174,9 @@ function private_page_access_page() {
                 $logs = get_option('private_page_token_logs', []);
                 foreach ($logs as $log) {
                     echo '<tr>';
-                    echo '<td>' . esc_html($log['token']) . '</td>';
+                    echo '<td>' . htmlspecialchars($log['token']) . '</td>';
                     echo '<td>' . date('Y-m-d H:i:s', $log['timestamp']) . '</td>';
-                    echo '<td>' . esc_html($log['ip']) . '</td>';
+                    echo '<td>' . htmlspecialchars($log['ip']) . '</td>';
                     echo '</tr>';
                 }
                 ?>
@@ -185,23 +197,19 @@ function private_page_access_page() {
     </script>
     <style>
         .form-table th {
-            padding: 10px 10px 10px 0;
+            width: 200px;
         }
-        .form-table td {
-            padding: 10px 0;
-        }
-        .form-table select, .form-table input[type="number"] {
-            width: 100%;
-            max-width: 300px;
+        .widefat.fixed {
+            margin-top: 20px;
         }
         .button-primary {
-            margin-top: 10px;
+            background-color: #0073aa;
+            border-color: #006799;
+            color: #fff;
         }
-        .widefat th, .widefat td {
-            padding: 8px 10px;
-        }
-        .widefat thead th {
-            background-color: #f1f1f1;
+        .button-primary:hover {
+            background-color: #006799;
+            border-color: #005177;
         }
     </style>
     <?php
